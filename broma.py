@@ -19,6 +19,15 @@ __all__ = [
 def set_brace_level(old_level: int, line: str) -> int:
     return old_level + line.count("{") - line.count("}")
 
+def indent_lines(text: str, spaces: int) -> str:
+    lines = text.splitlines()
+    out = ""
+    for line in lines:
+        out += " " * spaces + line + "\n"
+
+    # remove last newline
+    return out[:-1]
+
 # strips line from single-line comments and whitespace
 def strip_line(line: str):
     # remove comments
@@ -96,7 +105,7 @@ class BromaMember:
 
     def dump(self) -> str:
         if self.cpp_attributes:
-            return f"[[{', '.join(self.cpp_attributes)}]]\n    {self.type} {self.name};"
+            return f"[[{', '.join(self.cpp_attributes)}]]\n{self.type} {self.name};"
 
         return f"{self.type} {self.name};"
 
@@ -347,9 +356,9 @@ class BromaClass:
             elif isinstance(part, BromaPlatformBlock):
                 out += part.code
             elif isinstance(part, BromaMember):
-                out += ' ' * indent_level + part.dump()
+                out += indent_lines(part.dump(), indent_level)
             elif isinstance(part, BromaPad):
-                out += ' ' * indent_level + part.dump()
+                out += indent_lines(part.dump(), indent_level)
             elif isinstance(part, BromaComment):
                 dumped = part.dump()
                 if dumped:
