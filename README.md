@@ -18,6 +18,7 @@ Simply parses a broma file and outputs with no changes (except ones introduced b
 
 # TODO
 
-* attributes for members are probably broken?
+* multi line function arguments
+* c arrays members
 * template function args aren't parsed correctly
 * ret type should be separate from specifiers

@@ -7,7 +7,6 @@ import re
 __all__ = [
     "BromaMember"
     "BromaPad",
-    "BromaStruct",
     "BromaFunction",
     "BromaClass",
     "Broma",
@@ -93,8 +92,12 @@ def is_member(line: str):
 class BromaMember:
     type: str
     name: str
+    cpp_attributes: list[str] = field(default_factory=list)
 
     def dump(self) -> str:
+        if self.cpp_attributes:
+            return f"[[{', '.join(self.cpp_attributes)}]]\n    {self.type} {self.name};"
+
         return f"{self.type} {self.name};"
 
 @dataclass
@@ -103,14 +106,6 @@ class BromaPad:
 
     def dump(self) -> str:
         return f"PAD = {', '.join([f'{plat} {hex(self.platforms[plat])}' for plat in self.platforms])};"
-
-@dataclass
-class BromaStruct:
-    raw_members: list[BromaMember | BromaPad] = field(default_factory=list)
-
-    # process raw members into a struct
-    def process(self):
-        pass
 
 @dataclass
 class BromaComment:
@@ -162,6 +157,8 @@ class BromaClass:
         current_block_platforms = []
         current_block_text = []
 
+        next_member_attrs = []
+
         brace_level = 0
 
         lines = input.splitlines()
@@ -206,8 +203,11 @@ class BromaClass:
 
             # attributes
             elif match := re.match(r"\[\[(.*)\]\]", stripped_line):
-                validate(brace_level == 0, "attributes not in the global namespace")
-                attributes += [x.strip() for x in match.group(1).split(",")]
+                att = [x.strip() for x in match.group(1).split(",")]
+                if brace_level == 0: # class attributes
+                    attributes += att
+                else: # member attributes
+                    next_member_attrs += att
 
             # class name
             elif match := re.match(r"class[\s]+([a-zA-Z0-9_]+(::[a-zA-Z0-9_]+)*)[\s]*:?[ ]*([a-zA-Z0-9_:, ]*)[\s]*{", stripped_line):
@@ -229,8 +229,10 @@ class BromaClass:
 
                 # if brace level goes back to 1, the function is over
                 if brace_level == 1:
+                    attrs = list(next_member_attrs)
+                    next_member_attrs.clear()
                     inside_inlined_func = False
-                    func = BromaFunction.parse_inlined(current_inline_text, class_name)
+                    func = BromaFunction.parse_inlined(current_inline_text, class_name, attrs)
                     parts.append(func)
 
             # inside platform specific block
@@ -246,6 +248,9 @@ class BromaClass:
 
             # member
             elif brace_level == 1 and is_member(stripped_line):
+                attrs = list(next_member_attrs)
+                next_member_attrs.clear()
+
                 if stripped_line.startswith("PAD"):
                     # a pad
                     broma_pad = BromaPad()
@@ -262,7 +267,7 @@ class BromaClass:
                     # an actual member
                     type, name = split_variable(stripped_line.rpartition(";")[0])
 
-                    parts.append(BromaMember(type.strip(), name.strip()))
+                    parts.append(BromaMember(type.strip(), name.strip(), attrs))
 
             # platform specific block OR function
             elif brace_level == 1:
@@ -290,15 +295,19 @@ class BromaClass:
                     is_inlined = '{' in stripped_line
 
                     if not is_inlined:
-                        func = BromaFunction.parse(stripped_line, class_name)
+                        attrs = list(next_member_attrs)
+                        next_member_attrs.clear()
+                        func = BromaFunction.parse(stripped_line, class_name, attrs)
                         parts.append(func)
                     else:
                         inside_inlined_func = True
                         brace_level = set_brace_level(brace_level, stripped_line)
                         # if brace level is back to 1, the function was defined in 1 line.
                         if brace_level == 1:
+                            attrs = list(next_member_attrs)
+                            next_member_attrs.clear()
                             inside_inlined_func = False
-                            func = BromaFunction.parse_inlined([stripped_line], class_name)
+                            func = BromaFunction.parse_inlined([stripped_line], class_name, attrs)
                             parts.append(func)
                         else:
                             current_inline_text.clear()
@@ -375,15 +384,16 @@ class BromaClass:
 class BromaFunction:
     name: str
     inlined_body: str # from left brace to right brace
-    attrs = []
+    attrs: list[str] # such as static, virtual, callback
     args: list[tuple[str, str]] = [] # [(type, name)]
     ret_type: str
     binds: dict[str, int | None] # None means inlined, int is an offset
     qualifier: str # such as const, &, &&, const&
+    cpp_attrs: list[str] # [[attr]] attributes
 
-    KNOWN_ATTRS = ["static", "virtual", "callback"]
+    KNOWN_ATTRS = ["static", "virtual", "callback", "inline"]
 
-    def __init__(self, name: str, inlined_body: str, attrs: list[str], args: list[tuple[str, str]], ret_type: str, binds: dict[str, int | None], qualifier: str) -> None:
+    def __init__(self, name: str, inlined_body: str, attrs: list[str], args: list[tuple[str, str]], ret_type: str, binds: dict[str, int | None], qualifier: str, cpp_attrs: list[str]) -> None:
         self.name = name
         self.inlined_body = inlined_body
         self.attrs = attrs
@@ -391,15 +401,16 @@ class BromaFunction:
         self.ret_type = ret_type
         self.binds = binds
         self.qualifier = qualifier
+        self.cpp_attrs = cpp_attrs
 
     @classmethod
-    def parse(cls, line: str, class_name: str) -> BromaFunction:
-        inst = cls._parse_basic(line, class_name)
+    def parse(cls, line: str, class_name: str, cpp_attrs: list[str]) -> BromaFunction:
+        inst = cls._parse_basic(line, class_name, cpp_attrs)
         return inst
 
     @classmethod
-    def parse_inlined(cls, lines: list[str], class_name: str) -> BromaFunction:
-        inst = cls._parse_basic(lines[0], class_name)
+    def parse_inlined(cls, lines: list[str], class_name: str, cpp_attrs: list[str]) -> BromaFunction:
+        inst = cls._parse_basic(lines[0], class_name, cpp_attrs)
         inlined_str = "\n".join(lines)
         brace_level = 0
 
@@ -425,7 +436,7 @@ class BromaFunction:
         return inst
 
     @classmethod
-    def _parse_basic(cls, line: str, class_name: str) -> BromaFunction:
+    def _parse_basic(cls, line: str, class_name: str, cpp_attrs: list[str]) -> BromaFunction:
         if "::" in class_name:
             unq_class_name = class_name.rpartition("::")[2]
         else:
@@ -492,7 +503,7 @@ class BromaFunction:
                     print(f"Line: {line}")
 
         return cls(
-            fn_name, "", attrs, arglist, ret_type, binds, qualifier
+            fn_name, "", attrs, arglist, ret_type, binds, qualifier, cpp_attrs
         )
 
     def get_arg_types(self) -> list[str]:
@@ -500,6 +511,9 @@ class BromaFunction:
 
     def dump(self) -> str:
         out = ""
+        if self.cpp_attrs:
+            out += f"[[{', '.join(self.cpp_attrs)}]]\n"
+
         if self.attrs:
             out = f"{' '.join(self.attrs)} "
 

@@ -48,7 +48,9 @@ class MyClass : Base1, Base2 {
         bool m_platformSpecific;
     }
 
-    // [[missing(android)]]
-    // int m_memberWithAttr;
+    [[missing(android)]]
+    int m_memberWithAttr;
+
+    test[4] uint8_t;
 }
 
