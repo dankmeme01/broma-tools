@@ -18,7 +18,6 @@ Simply parses a broma file and outputs with no changes (except ones introduced b
 
 # TODO
 
-* preserve comments on members or functions
 * c arrays members
 * template function args aren't parsed correctly (but is ok in dump!)
 * ret type should be separate from specifiers (but is ok in dump!)

@@ -17,14 +17,14 @@ comment
 
 [[link(android)]]
 class MyClass : Base1, Base2 {
-    virtual void onClosePopup(UploadActionPopup*) {
+    virtual void onClosePopup(UploadActionPopup*) { // hi
         log::debug("test");
         if (true == false) {
             log::warn("this is vile");
         }
     }
 
-    void mutliLineSig(int x, float y, CCObject* z) = win 0x123;
+    void mutliLineSig(int x, float y, CCObject* z) = win 0x123; // comment!
 
     void mutliLineSig2(float z) {
         return;
@@ -47,7 +47,7 @@ class MyClass : Base1, Base2 {
         log::debug("holy shit");
     }
 
-    void* m_myMember;
+    void* m_myMember; // inline comment on a member
     PAD = win 0x3, android32 0x4;
     void* m_anotherMemberWithCorrectAsterisk;
 

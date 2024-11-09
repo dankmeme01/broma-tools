@@ -234,12 +234,18 @@ class BromaMember:
     type: str
     name: str
     cpp_attributes: list[str] = field(default_factory=list)
+    inline_comment: str = ""
 
     def dump(self) -> str:
         if self.cpp_attributes:
-            return f"[[{', '.join(self.cpp_attributes)}]]\n{self.type} {self.name};"
+            ret = f"[[{', '.join(self.cpp_attributes)}]]\n{self.type} {self.name};"
+        else:
+            ret = f"{self.type} {self.name};"
 
-        return f"{self.type} {self.name};"
+        if self.inline_comment:
+            ret += f" //{self.inline_comment}"
+
+        return ret
 
 @dataclass
 class BromaPad:
@@ -456,8 +462,11 @@ class BromaClass:
                 else:
                     # an actual member
                     type, name = split_variable(stripped_line.rpartition(";")[0])
+                    inline_comment = ''
+                    if '//' in line:
+                        inline_comment = line.partition('//')[2]
 
-                    parts.append(BromaMember(type.strip(), name.strip(), attrs))
+                    parts.append(BromaMember(type.strip(), name.strip(), attrs, inline_comment))
 
             # platform specific block OR function
             elif brace_level == 1:
@@ -656,10 +665,11 @@ class BromaFunction:
     binds: dict[str, int | None] # None means inlined, int is an offset
     qualifier: str # such as const, &, &&, const&
     cpp_attrs: list[str] # [[attr]] attributes
+    inline_comment: str = ""
 
     KNOWN_ATTRS = ["static", "virtual", "callback", "inline"]
 
-    def __init__(self, name: str, inlined_body: str, attrs: list[str], args: list[tuple[str, str]], ret_type: str, binds: dict[str, int | None], qualifier: str, cpp_attrs: list[str]) -> None:
+    def __init__(self, name: str, inlined_body: str, attrs: list[str], args: list[tuple[str, str]], ret_type: str, binds: dict[str, int | None], qualifier: str, cpp_attrs: list[str], inline_comment: str = "") -> None:
         self.name = name
         self.inlined_body = inlined_body
         self.attrs = attrs
@@ -668,6 +678,7 @@ class BromaFunction:
         self.binds = binds
         self.qualifier = qualifier
         self.cpp_attrs = cpp_attrs
+        self.inline_comment = inline_comment
 
     @classmethod
     def parse(cls, line: str, class_name: str, cpp_attrs: list[str]) -> BromaFunction:
@@ -762,6 +773,10 @@ class BromaFunction:
             qualifier = past_args.partition(";")[0].partition("{")[0]
             binds_list = []
 
+        inline_comment = ""
+        if '//' in past_args:
+            inline_comment = past_args.partition("//")[2]
+
         qualifier = qualifier.strip()
 
         binds = {}
@@ -780,7 +795,7 @@ class BromaFunction:
                     print(f"Line: {line}")
 
         return cls(
-            fn_name, "", attrs, arglist, ret_type, binds, qualifier, cpp_attrs
+            fn_name, "", attrs, arglist, ret_type, binds, qualifier, cpp_attrs, inline_comment
         )
 
     def get_arg_types(self) -> list[str]:
@@ -848,6 +863,10 @@ class BromaFunction:
 
         if not self.inlined_body:
             out += ";"
+
+            if self.inline_comment:
+                out += f" //{self.inline_comment.rstrip()}"
+
             return out
 
         # add inlined body

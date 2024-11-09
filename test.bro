@@ -17,7 +17,7 @@ comment
 
 [[link(android)]]
 class MyClass : Base1, Base2 {
-    virtual void onClosePopup(UploadActionPopup*) {
+    virtual void onClosePopup(UploadActionPopup*) { // hi
         log::debug("test");
         if (true == false) {
             log::warn("this is vile");
@@ -28,7 +28,7 @@ class MyClass : Base1, Base2 {
         int x,
         float y,
         CCObject* z
-    ) = win 0x123;
+    ) = win 0x123; // comment!
 
     void mutliLineSig2(
         float z
