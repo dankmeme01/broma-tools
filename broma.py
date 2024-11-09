@@ -16,8 +16,140 @@ __all__ = [
     "is_member"
 ]
 
-def set_brace_level(old_level: int, line: str) -> int:
-    return old_level + line.count("{") - line.count("}")
+class CharReader:
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.idx = 0
+
+    def peek(self) -> str:
+        return self.text[self.idx]
+
+    def peek_chars(self, n: int) -> str:
+        return self.text[self.idx : self.idx + n]
+
+    def skip_char(self):
+        self.idx = min(self.idx + 1, len(self.text))
+
+    def read_char(self) -> str:
+        if self.idx >= len(self.text):
+            raise ValueError("EOF")
+
+        char = self.text[self.idx]
+        self.skip_char()
+        return char
+
+    def read_chars(self, n: int) -> str:
+        out = ""
+        for _ in range(n):
+            out += self.read_char()
+
+        return out
+
+    # read text until the sequence of characters is found (can be 1 char)
+    def read_until(self, seq: str, include = False) -> str:
+        out = ""
+
+        found = False
+        while self.idx + len(seq) < len(self.text):
+            if self.peek_chars(len(seq)) == seq:
+                found = True
+                break
+
+            out += self.read_char()
+
+        if include and found:
+            out += self.read_chars(len(seq))
+
+        return out
+
+    # read text until any char from the sequence is found
+    def read_until_any(self, seq: str, include = False) -> str:
+        out = ""
+
+        found = False
+        while self.idx + 1 < len(self.text):
+            if self.peek() in seq:
+                found = True
+                break
+
+            out += self.read_char()
+
+        if include and found:
+            out += self.read_char()
+
+        return out
+
+    def read_until_not_any(self, seq: str, include = False) -> str:
+        out = ""
+
+        found = False
+        while self.idx + 1 < len(self.text):
+            if self.peek() not in seq:
+                found = True
+                break
+
+            out += self.read_char()
+
+        if include and found:
+            out += self.read_char()
+
+        return out
+
+    def skip_whitespace(self):
+        while self.peek().isspace():
+            self.skip_char()
+
+    def skip_until(self, seq: str, include = False):
+        self.read_until(seq, include)
+
+    def skip_until_any(self, seq: str, include = False):
+        self.read_until_any(seq, include)
+
+    def skip_until_not_any(self, seq: str, include = False):
+        self.read_until_not_any(seq, include)
+
+    def skip_while(self, cond):
+        while cond(self.peek()):
+            self.skip_char()
+
+    def peek_line(self) -> str:
+        old_idx = self.idx
+        text = self.read_until('\n', True)[0:-1]
+        self.idx = old_idx
+        return text
+
+    def read_line(self) -> str:
+        return self.read_until('\n', True)[0:-1]
+
+    def skip_line(self):
+        self.skip_until('\n')
+        self.skip_char()
+
+    def skip_comment(self) -> bool:
+        if self.peek() == '/':
+            if self.peek() == '/':
+                self.skip_line()
+                return True
+            elif self.peek() == '*':
+                self.skip_char()
+                self.skip_until('*/', True)
+                return True
+
+        return False
+
+    def skip_comments(self):
+        while self.skip_comment():
+            pass
+
+    def skip_comments_and_whitespace(self):
+        while True:
+            self.skip_whitespace()
+            if not self.skip_comment():
+                break
+
+def set_brace_level(old_level: int, line: str, paren: bool = False) -> int:
+    chr1, chr2 = ('{', '}') if not paren else ('(', ')')
+    return old_level + line.count(chr1) - line.count(chr2)
 
 def indent_lines(text: str, spaces: int) -> str:
     lines = text.splitlines()
@@ -166,6 +298,13 @@ class BromaClass:
         current_block_platforms = []
         current_block_text = []
 
+        inside_func_signature = False
+        current_func_signature_text = ""
+        current_func_sig_brace_level = 0
+
+        inside_inlined_func_signature = False
+        current_inlined_func_signature_text = []
+
         next_member_attrs = []
 
         brace_level = 0
@@ -255,6 +394,48 @@ class BromaClass:
                     block = BromaPlatformBlock(current_block_platforms, '\n'.join(current_block_text))
                     parts.append(block)
 
+            # inside inline definition of a function that has a multi-line function signature
+            elif inside_inlined_func_signature:
+                brace_level = set_brace_level(brace_level, stripped_line)
+                current_inlined_func_signature_text.append(line)
+
+                # if brace level goes back to 1, the function is over
+                if brace_level == 1:
+                    attrs = list(next_member_attrs)
+                    next_member_attrs.clear()
+                    inside_inlined_func_signature = False
+                    func = BromaFunction.parse_multiline_signature_inlined(current_func_signature_text, current_inlined_func_signature_text, class_name, attrs)
+                    parts.append(func)
+
+            # inside function signature
+            elif inside_func_signature:
+                current_func_signature_text += line + "\n"
+                current_func_sig_brace_level = set_brace_level(current_func_sig_brace_level, stripped_line, True)
+
+                if current_func_sig_brace_level == 0:
+                    current_func_signature_text = current_func_signature_text.strip(' \t\n{')
+                    inside_func_signature = False
+
+                    # check if the function has a body
+                    if '{' in stripped_line:
+                        inside_inlined_func_signature = True
+                        brace_level = set_brace_level(brace_level, stripped_line)
+                        # if brace level is back to 1, the function was defined in 1 line.
+                        if brace_level == 1:
+                            attrs = list(next_member_attrs)
+                            next_member_attrs.clear()
+                            inside_inlined_func_signature = False
+                            func = BromaFunction.parse_multiline_signature_inlined(current_func_signature_text, [stripped_line.partition("{")[2].rpartition("}")[0]], class_name, attrs)
+                            parts.append(func)
+                        else:
+                            current_inlined_func_signature_text.clear()
+                            current_inlined_func_signature_text.append(line) # raw line, not stripped
+                    else:
+                        attrs = list(next_member_attrs)
+                        next_member_attrs.clear()
+                        func = BromaFunction.parse_multiline_signature(current_func_signature_text, class_name, attrs)
+                        parts.append(func)
+
             # member
             elif brace_level == 1 and is_member(stripped_line):
                 attrs = list(next_member_attrs)
@@ -302,13 +483,18 @@ class BromaClass:
                 else: # function
                     # first determine if it's inlined or not
                     is_inlined = '{' in stripped_line
+                    is_multiline_signature = stripped_line.count('(') != stripped_line.count(')')
 
-                    if not is_inlined:
+                    if is_multiline_signature: #
+                        inside_func_signature = True
+                        current_func_signature_text = line + "\n"
+                        current_func_sig_brace_level = set_brace_level(current_func_sig_brace_level, stripped_line, True)
+                    elif not is_inlined: # non inlined function
                         attrs = list(next_member_attrs)
                         next_member_attrs.clear()
                         func = BromaFunction.parse(stripped_line, class_name, attrs)
                         parts.append(func)
-                    else:
+                    else: # inlined function
                         inside_inlined_func = True
                         brace_level = set_brace_level(brace_level, stripped_line)
                         # if brace level is back to 1, the function was defined in 1 line.
@@ -329,8 +515,79 @@ class BromaClass:
         global_validate(len(class_name) > 0, start_line + len(input.splitlines()), "class name was empty")
         return BromaClass(class_name, attributes, parts, bases)
 
+    @classmethod
+    def _parse_v2(cls, input: str, start_line: int) -> BromaClass:
+        # TODO: unimpl
+        reader = CharReader(input)
+        class_attributes = []
+
+        parts = []
+
+        brace_level = 0
+
+        # class definition starts with optional attributes.
+        reader.skip_comments_and_whitespace()
+        if reader.peek() == '[':
+            attrstr = reader.read_until(']]', True)
+            class_attributes = [x.strip() for x in attrstr.strip('[]').split(',')]
+
+        # now, the class name and bases
+        reader.skip_comments_and_whitespace()
+        reader.skip_until('class ', True)
+        class_name = reader.read_until(' ', True).strip()
+        reader.skip_char() # skip colon
+        reader.skip_comments_and_whitespace()
+        class_bases = [x.strip() for x in reader.read_until('{').strip().split(",") if x.strip()]
+
+        validate(class_name, "class name was empty")
+        validate(reader.read_char() == '{', "did not find the opening brace")
+        reader.skip_line()
+        reader.skip_until_not_any('\n', True)
+
+        brace_level = 1
+        line_idx = start_line
+
+        def validate(cond, message):
+            # TODO figure out line index
+            global_validate(cond, line_idx, message)
+
+        while True:
+            line_idx += 1
+
+            line = reader.peek_line()
+            stripped_line = strip_line(line)
+            inline_comment = None
+
+            # empty line
+            if not line.strip():
+                parts.append(BromaComment(None))
+                reader.skip_line()
+                continue
+
+            # single line comment
+            if stripped_line.startswith("//"):
+                parts.append(BromaComment(stripped_line[2:]))
+                reader.skip_line()
+                continue
+
+            # multiline comment, does not halt parsing
+            if '/*' in stripped_line:
+                line = reader.read_until('/*', False).strip()
+                stripped_line = strip_line(line)
+                inline_comment = reader.read_until('*/', True).strip()[2:-2].strip()
+
+
+
+            # append inline comment if was parsed earlier
+            if inline_comment:
+                parts.append(BromaComment(inline_comment))
+
     def dump(self) -> str:
-        out = f"[[{', '.join(self.attributes)}]]\n"
+        out = ""
+
+        if self.attributes:
+            out += f"[[{', '.join(self.attributes)}]]\n"
+
         out += f"class {self.name} "
 
         if len(self.bases) > 0:
@@ -443,6 +700,17 @@ class BromaFunction:
         inst.inlined_body = '\n'.join(lines)
 
         return inst
+
+    @classmethod
+    def parse_multiline_signature(cls, signature: str, class_name: str, cpp_attrs: list[str]) -> BromaFunction:
+        # fuck your multiline
+        signature = signature.replace('\n', '')
+        return cls.parse(signature, class_name, cpp_attrs)
+
+    @classmethod
+    def parse_multiline_signature_inlined(cls, signature: str, body: list[str], class_name: str, cpp_attrs: list[str]) -> BromaFunction:
+        signature = signature.replace('\n', '')
+        return cls.parse_inlined([signature] + body, class_name, cpp_attrs)
 
     @classmethod
     def _parse_basic(cls, line: str, class_name: str, cpp_attrs: list[str]) -> BromaFunction:

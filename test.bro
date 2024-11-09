@@ -23,6 +23,19 @@ class MyClass : Base1, Base2 {
             log::warn("this is vile");
         }
     }
+
+    void mutliLineSig(
+        int x,
+        float y,
+        CCObject* z
+    ) = win 0x123;
+
+    void mutliLineSig2(
+        float z
+    ) {
+        return;
+    }
+
     /*
     big
     fat
@@ -40,7 +53,7 @@ class MyClass : Base1, Base2 {
         log::debug("holy shit");
     }
 
-    void * m_myMember;
+    void * m_myMember; // inline comment on a member
     PAD = win 0x3, android32 0x4;
     void* m_anotherMemberWithCorrectAsterisk;
 
