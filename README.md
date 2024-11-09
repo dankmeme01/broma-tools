@@ -19,4 +19,5 @@ Simply parses a broma file and outputs with no changes (except ones introduced b
 # TODO
 
 * attributes for members are probably broken?
-* platform specific scopes (i.e. theres a member in sfxbrowser) are broken i think
+* template function args aren't parsed correctly
+* ret type should be separate from specifiers

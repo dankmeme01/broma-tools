@@ -127,6 +127,18 @@ class BromaComment:
             return None
 
 @dataclass
+class BromaPlatformBlock:
+    platforms: list[str]
+    code: str
+
+    def dump(self) -> str:
+        out = ""
+        for platform in self.platforms:
+            out += f"// {platform}\n"
+        out += self.code
+        return out
+
+@dataclass
 class BromaClass:
     name: str = "" # fully qualified class name
     attributes: list[str] = field(default_factory = list)
@@ -141,9 +153,14 @@ class BromaClass:
         bases = []
 
         inside_inlined_func = False
-        inside_ml_comment = False # multiline comment
         current_inline_text = []
+
+        inside_ml_comment = False # multiline comment
         current_ml_comment_text = ""
+
+        inside_ps_block = False
+        current_block_platforms = []
+        current_block_text = []
 
         brace_level = 0
 
@@ -216,6 +233,17 @@ class BromaClass:
                     func = BromaFunction.parse_inlined(current_inline_text, class_name)
                     parts.append(func)
 
+            # inside platform specific block
+            elif inside_ps_block:
+                brace_level = set_brace_level(brace_level, stripped_line)
+                current_block_text.append(line)
+
+                # if brace level goes back to 1, the block is over
+                if brace_level == 1:
+                    inside_ps_block = False
+                    block = BromaPlatformBlock(current_block_platforms, '\n'.join(current_block_text))
+                    parts.append(block)
+
             # member
             elif brace_level == 1 and is_member(stripped_line):
                 if stripped_line.startswith("PAD"):
@@ -236,7 +264,7 @@ class BromaClass:
 
                     parts.append(BromaMember(type.strip(), name.strip()))
 
-            # function (maybe)
+            # platform specific block OR function
             elif brace_level == 1:
                 if stripped_line == '}':
                     brace_level -= 1
@@ -245,23 +273,36 @@ class BromaClass:
                 if not stripped_line:
                     continue
 
-                # first determine if it's inlined or not
-                is_inlined = '{' in stripped_line
+                is_ps_block = '{' in stripped_line and not '(' in stripped_line
 
-                if not is_inlined:
-                    func = BromaFunction.parse(stripped_line, class_name)
-                    parts.append(func)
-                else:
-                    inside_inlined_func = True
+                if is_ps_block: # platform specific block
+                    # parse platforms
+                    current_block_platforms = stripped_line.partition('{')[0].strip().split(",")
+
+                    # set everything else
+                    current_block_text.clear()
+                    current_block_text.append(line) # raw line, not stripped
+                    inside_ps_block = True
                     brace_level = set_brace_level(brace_level, stripped_line)
-                    # if brace level is back to 1, the function was defined in 1 line.
-                    if brace_level == 1:
-                        inside_inlined_func = False
-                        func = BromaFunction.parse_inlined([stripped_line], class_name)
+
+                else: # function
+                    # first determine if it's inlined or not
+                    is_inlined = '{' in stripped_line
+
+                    if not is_inlined:
+                        func = BromaFunction.parse(stripped_line, class_name)
                         parts.append(func)
                     else:
-                        current_inline_text.clear()
-                        current_inline_text.append(line) # raw line, not stripped
+                        inside_inlined_func = True
+                        brace_level = set_brace_level(brace_level, stripped_line)
+                        # if brace level is back to 1, the function was defined in 1 line.
+                        if brace_level == 1:
+                            inside_inlined_func = False
+                            func = BromaFunction.parse_inlined([stripped_line], class_name)
+                            parts.append(func)
+                        else:
+                            current_inline_text.clear()
+                            current_inline_text.append(line) # raw line, not stripped
 
             # should be unreachable
             else:
@@ -294,6 +335,8 @@ class BromaClass:
                 lines = dumped.splitlines()
                 lines = [' ' * indent_level + x for x in lines]
                 out += '\n'.join(lines)
+            elif isinstance(part, BromaPlatformBlock):
+                out += part.code
             elif isinstance(part, BromaMember):
                 out += ' ' * indent_level + part.dump()
             elif isinstance(part, BromaPad):
@@ -738,6 +781,6 @@ class Broma:
 
 def parse(path: Path | str) -> Broma:
     if Path(path).exists():
-        return Broma(Path(path).read_text())
+        return Broma(Path(path).read_text(encoding='utf-8'))
     else:
         return Broma(path) # assume it's a string

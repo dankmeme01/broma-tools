@@ -43,5 +43,12 @@ class MyClass : Base1, Base2 {
     void* m_myMember;
     PAD = win 0x3, android32 0x4;
     void* m_anotherMemberWithCorrectAsterisk;
+
+    win, mac {
+        bool m_platformSpecific;
+    }
+
+    // [[missing(android)]]
+    // int m_memberWithAttr;
 }
 
