@@ -694,7 +694,7 @@ class BromaClass:
                 dumped = part.dump()
                 # print(f"dumped:\n{dumped}")
                 lines = dumped.splitlines()
-                lines = [' ' * indent_level + x for x in lines]
+                lines = [(' ' * indent_level + x if x else '') for x in lines]
                 out += '\n'.join(lines)
             elif isinstance(part, BromaPlatformBlock):
                 out += part.code
@@ -909,6 +909,13 @@ class BromaFunction:
 
     def get_arg_types(self) -> list[str]:
         return [x[0] for x in self.args]
+
+    def format_inlined_body(self):
+        # this is a very simple formatter that just removes trailing spaces and replaces tabs with spaces
+        lines = self.inlined_body.splitlines()
+        out = ""
+        for line in lines:
+            out += line.replace("\t", "    ").rstrip() + "\n"
 
     def dump(self) -> str:
         out = ""
@@ -1199,6 +1206,22 @@ class Broma:
         out = self.preamble
 
         for cls in self.classes:
+            out += cls.dump()
+            out += "\n\n"
+
+        return out
+
+    def dump_formatted(self) -> str:
+        self.sort_everything()
+
+        out = self.preamble
+
+        for cls in self.classes:
+            for part in cls.parts:
+                if isinstance(part, BromaFunction):
+                    if part.inlined_body:
+                        part.format_inlined_body()
+
             out += cls.dump()
             out += "\n\n"
 
