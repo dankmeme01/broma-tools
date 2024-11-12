@@ -1177,6 +1177,8 @@ class Broma:
 
             total_lines += 1
 
+        return ("", 0)
+
     def find_class(self, name: str) -> BromaClass:
         for class_ in self.classes:
             if class_.name == name:
@@ -1232,3 +1234,14 @@ def parse(path: Path | str) -> Broma:
         return Broma(Path(path).read_text(encoding='utf-8'))
     else:
         return Broma(path) # assume it's a string
+
+def merge(bromas: list[Broma]) -> Broma:
+    out = Broma("")
+
+    for broma in bromas:
+        if broma.preamble:
+            out.preamble += broma.preamble + "\n"
+
+        out.classes += broma.classes
+
+    return out
