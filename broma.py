@@ -607,8 +607,6 @@ class BromaClass:
         last_comment = None
 
         for n, part in enumerate(self.parts):
-            if self.name == 'GJRewardItem':
-                print(getattr(part, 'attrs', None), getattr(part, 'ret_type', None), part.dump())
             if isinstance(part, BromaFunction):
                 if part.is_constructor(self.name) or part.is_destructor(self.name):
                     constructors.append(part)
