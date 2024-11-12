@@ -168,6 +168,9 @@ def strip_line(line: str):
 
     return line.strip()
 
+def fix_cocos_typename(tn: str) -> str:
+    return \
+        tn.replace('cocos2d::_ccColor', 'cocos2d::ccColor') \
 
 # split a variable like 'void* m_member' into ('void*', 'm_member'), accounting for the positioning of asterisks in pointers
 # this function is a monstrosity
@@ -175,10 +178,10 @@ def split_variable(var: str) -> tuple[str, str]:
     # if no variable, then just return the input as the type
     var = var.strip()
     if var.endswith('*') or var.endswith('&'):
-        return (var, '')
+        return (fix_cocos_typename(var), '')
 
     if ' ' not in var:
-        return (var, '')
+        return (fix_cocos_typename(var), '')
 
     # insert spaces if asterisk is in the wrong place (dont ask)
     last_asterisk = -1
@@ -214,7 +217,7 @@ def split_variable(var: str) -> tuple[str, str]:
     while ' *' in type_string:
         type_string = type_string.replace(' *', '*')
 
-    return type_string, var_name
+    return fix_cocos_typename(type_string), var_name
 
 # syntax validation
 def validate(cond, line_idx, message):
@@ -591,6 +594,82 @@ class BromaClass:
             if inline_comment:
                 parts.append(BromaComment(inline_comment))
 
+    def sort(self):
+        # put all functions at the top and sort them alphabetically, then put all members at the bottom and keep their order intact
+        # comments are 'glued' to the next member/function
+
+        functions = []
+        statics = [] # static are at the top
+        virtuals = [] # virtuals must maintain their order...
+        constructors = []
+        members = []
+        comments = []
+        last_comment = None
+
+        for n, part in enumerate(self.parts):
+            if self.name == 'GJRewardItem':
+                print(getattr(part, 'attrs', None), getattr(part, 'ret_type', None), part.dump())
+            if isinstance(part, BromaFunction):
+                if part.is_constructor(self.name) or part.is_destructor(self.name):
+                    constructors.append(part)
+                elif 'virtual' in part.attrs:
+                    virtuals.append(part)
+                elif 'static' in part.attrs:
+                    statics.append(part)
+                else:
+                    functions.append(part)
+            elif isinstance(part, BromaMember):
+                members.append(part)
+            elif isinstance(part, BromaPad):
+                members.append(part)
+
+        # now, iterate in reverse and glue comments to the next member/function
+        for n, part in reversed(list(enumerate(self.parts))):
+            if not isinstance(part, BromaComment):
+                continue
+
+            if n == len(self.parts) - 1:
+                # comment is at the end of the class ?
+                last_comment = part
+                continue
+
+            next_part = self.parts[n + 1]
+            comments.append((next_part, part))
+
+        # sort functions
+        functions.sort(key=lambda x: x.name.casefold())
+        statics.sort(key=lambda x: x.name.casefold())
+
+        # do NOT sort virtuals (constructors neither but those don't matter that much)
+
+        # put everything back together
+
+        new_parts = []
+
+        for func in constructors:
+            new_parts.append(func)
+
+        for func in statics:
+            new_parts.append(func)
+
+        for func in functions:
+            new_parts.append(func)
+
+        for func in virtuals:
+            new_parts.append(func)
+
+        for member in members:
+            new_parts.append(member)
+
+        for (next_part, comment) in comments:
+            idx = new_parts.index(next_part)
+            new_parts.insert(idx, comment)
+
+        if last_comment:
+            new_parts.append(last_comment)
+
+        self.parts = new_parts
+
     def dump(self) -> str:
         out = ""
 
@@ -635,7 +714,7 @@ class BromaClass:
         out += "}"
         return out
 
-    def find_function(self, name: str, arglist: list[str] | None) -> BromaFunction:
+    def find_function(self, name: str, arglist: list[str] | None = None) -> BromaFunction:
         for func in self.parts:
             if not isinstance(func, BromaFunction):
                 continue
@@ -651,6 +730,17 @@ class BromaClass:
                 return func
 
         return None
+
+    def overload_count(self, name: str) -> int:
+        count = 0
+        for func in self.parts:
+            if not isinstance(func, BromaFunction):
+                continue
+
+            if func.name == name:
+                count += 1
+
+        return count
 
     # Remove any comments, empty lines
     def strip(self):
@@ -679,6 +769,23 @@ class BromaFunction:
         self.qualifier = qualifier
         self.cpp_attrs = cpp_attrs
         self.inline_comment = inline_comment
+
+    def __eq__(self, value: object) -> bool:
+        if not isinstance(value, BromaFunction):
+            return False
+
+        return self.eq_ignore_ret_type(value) and self.ret_type == value.ret_type
+
+    def eq_ignore_ret_type(self, value: BromaFunction) -> bool:
+        same_args = len(self.args) == len(value.args) and all([x[0] == y[0] for x, y in zip(self.args, value.args)])
+
+        return self.name == value.name and same_args
+
+    def is_constructor(self, class_name: str) -> bool:
+        return self.name == class_name
+
+    def is_destructor(self, class_name: str) -> bool:
+        return self.name == f"~{class_name}"
 
     @classmethod
     def parse(cls, line: str, class_name: str, cpp_attrs: list[str]) -> BromaFunction:
@@ -735,13 +842,15 @@ class BromaFunction:
 
         fn_name = ""
 
+        line = line.lstrip()
+
         while True:
             found_attrs = False
 
             for attr in cls.KNOWN_ATTRS:
                 if line.startswith(attr):
                     attrs.append(attr)
-                    line = line[len(attr) + 1:]
+                    line = line[len(attr) + 1:].lstrip()
                     found_attrs = True
 
             if not found_attrs:
@@ -759,6 +868,8 @@ class BromaFunction:
                 fn_name = fn_name.rpartition(" ")[2]
             if "*" in fn_name:
                 fn_name = fn_name.rpartition("*")[2].strip()
+
+        fn_name = fn_name.strip()
 
         ret_type = line.partition(fn_name)[0].strip()
         arglist = [split_variable(x.strip()) for x in line.partition(fn_name)[2].partition("(")[2].partition(")")[0].split(",") if x.strip()]
@@ -1079,6 +1190,12 @@ class Broma:
                 return class_
 
         return None
+
+    def sort_everything(self):
+        for cls in self.classes:
+            cls.sort()
+
+        self.classes.sort(key=lambda x: x.name.casefold())
 
     def dump(self) -> str:
         out = self.preamble
