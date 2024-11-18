@@ -66,5 +66,4 @@ for cls in merged.classes:
                 warn(f"{cls.name}::{func} has overloads both virtual and non-virtual overloads")
                 warn("This can cause to incorrect vtable generation, check the vtable manually")
 
-
-
+# write it to a file

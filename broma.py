@@ -311,6 +311,9 @@ class BromaClass:
         current_func_signature_text = ""
         current_func_sig_brace_level = 0
 
+        inside_ml_attributes = False # multiline attributes
+        current_ml_attributes = ""
+
         inside_inlined_func_signature = False
         current_inlined_func_signature_text = []
 
@@ -358,14 +361,6 @@ class BromaClass:
             elif not line.strip() and not inside_inlined_func:
                 parts.append(BromaComment(None))
 
-            # attributes
-            elif match := re.match(r"\[\[(.*)\]\]", stripped_line):
-                att = [x.strip() for x in match.group(1).split(",")]
-                if brace_level == 0: # class attributes
-                    attributes += att
-                else: # member attributes
-                    next_member_attrs += att
-
             # class name
             elif match := re.match(r"class[\s]+([a-zA-Z0-9_]+(::[a-zA-Z0-9_]+)*)[\s]*:?[ ]*([a-zA-Z0-9_:, ]*)[\s]*{", stripped_line):
                 validate(brace_level == 0, "nested class")
@@ -378,6 +373,22 @@ class BromaClass:
                 brace_level = set_brace_level(brace_level, stripped_line)
 
                 validate(brace_level == 1, "class did not immediately open its body")
+
+            # inside multiline attributes
+            elif inside_ml_attributes:
+                current_ml_attributes += stripped_line.strip()
+                if ']]' in stripped_line:
+                    att = [x.strip() for x in current_ml_attributes.strip('[]').split(',')]
+
+                    if brace_level == 0:
+                        # class attrs
+                        attributes += att
+                    else:
+                        # member attrs
+                        next_member_attrs += att
+
+                    inside_ml_attributes = False
+                    current_ml_attributes = ""
 
             # inside inlined function
             elif inside_inlined_func:
@@ -444,6 +455,19 @@ class BromaClass:
                         next_member_attrs.clear()
                         func = BromaFunction.parse_multiline_signature(current_func_signature_text, class_name, attrs)
                         parts.append(func)
+
+            # attributes (one-line)
+            elif match := re.match(r"\[\[(.*)\]\]", stripped_line):
+                att = [x.strip() for x in match.group(1).split(",")]
+                if brace_level == 0: # class attributes
+                    attributes += att
+                else: # member attributes
+                    next_member_attrs += att
+
+            # attributes (multi-line)
+            elif stripped_line.startswith("[["):
+                inside_ml_attributes = True
+                current_ml_attributes = stripped_line.partition("[[")[2]
 
             # member
             elif brace_level == 1 and is_member(stripped_line):
@@ -644,18 +668,23 @@ class BromaClass:
 
         new_parts = []
 
+        # first ctor, dtor, etc..
         for func in constructors:
             new_parts.append(func)
 
+        # static functions
         for func in statics:
             new_parts.append(func)
 
-        for func in functions:
-            new_parts.append(func)
-
+        # virtuals are at the top to fix MSVC virtual ordering issue
         for func in virtuals:
             new_parts.append(func)
 
+        # rest of the functions
+        for func in functions:
+            new_parts.append(func)
+
+        # members
         for member in members:
             new_parts.append(member)
 

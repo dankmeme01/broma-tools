@@ -24,13 +24,13 @@ class MyClass : Base1, Base2 {
         }
     }
 
-    void mutliLineSig(
+    void multiLineSig(
         int x,
         float y,
         CCObject* z
     ) = win 0x123; // comment!
 
-    void mutliLineSig2(
+    void multiLineSig2(
         float z
     ) {
         return;
@@ -48,6 +48,8 @@ class MyClass : Base1, Base2 {
      comment*/
 
     // comment
+    [[test(a),
+    test(b)]]
     static callback virtual void woah(gd::map<gd::string, gd::string const&> const& insane) = win inline, mac 0x3 {
         // another one
         log::debug("holy shit");
@@ -61,7 +63,10 @@ class MyClass : Base1, Base2 {
         bool m_platformSpecific;
     }
 
-    [[missing(android)]]
+    [[
+        missing(android),
+        not_missing(windows)
+    ]]
     int m_memberWithAttr;
 
     uint8_t test[4];

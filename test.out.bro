@@ -24,9 +24,9 @@ class MyClass : Base1, Base2 {
         }
     }
 
-    void mutliLineSig(int x, float y, CCObject* z) = win 0x123; // comment!
+    void multiLineSig(int x, float y, CCObject* z) = win 0x123; // comment!
 
-    void mutliLineSig2(float z) {
+    void multiLineSig2(float z) = win 0x123 {
         return;
     }
 
