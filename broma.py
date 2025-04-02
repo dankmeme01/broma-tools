@@ -16,6 +16,9 @@ __all__ = [
     "is_member"
 ]
 
+def is_line_cpp_attributes(text: str):
+    return re.match(r"\[\[(.*)\]\]", text.strip()) is not None
+
 class CharReader:
     def __init__(self, text: str) -> None:
         self.text = text
@@ -689,7 +692,11 @@ class BromaClass:
             new_parts.append(member)
 
         for (next_part, comment) in comments:
-            idx = new_parts.index(next_part)
+            try:
+                idx = new_parts.index(next_part)
+            except:
+                idx = len(new_parts) - 1
+
             new_parts.insert(idx, comment)
 
         if last_comment:
@@ -1022,17 +1029,19 @@ class BromaFunction:
 class Broma:
     raw_lines: list[str] # raw lines as they were in the input
     classes: list[BromaClass]
+    global_functions: list[BromaFunction]
     preamble: str = ""
 
     def __init__(self, content: str) -> None:
         self.raw_lines = content.splitlines()
         self.preamble, start_of_classes = self.parse_preamble()
-        self.classes = self.parse_classes(start_of_classes)
+        self.classes = self.parse_global_items(start_of_classes)
 
     def preprocess(self, content: str) -> list[str]:
         return [x.strip() for x in content.splitlines()]
 
-    def parse_classes(self, start_of_classes: int) -> list[BromaClass]:
+    def parse_global_items(self, start_of_classes: int) -> list[BromaClass]:
+        self.global_functions = []
         classes: list[tuple[str, int]] = [] # (class, first line)
 
         current_class_str = ""
@@ -1065,117 +1074,64 @@ class Broma:
                 classes.append((current_class_str, current_class_start))
                 current_class_str = ""
 
+        if current_class_str:
+            self.parse_and_add_residue(current_class_str)
+
         out = []
 
         # now, parse each class separately
         for (data, start_line) in classes:
-            c = BromaClass.parse(data, start_line)
+            residue, data = self.get_potential_residue(data, start_line)
+            extra_residue_lines = 0
+
+            if residue:
+                self.parse_and_add_residue(residue)
+                extra_residue_lines = residue.count("\n") + 1
+
+            c = BromaClass.parse(data, start_line + extra_residue_lines) # idk if the line calc is right
             out.append(c)
 
         return out
-        # # attributes
-        # if match := re.match(r"\[\[(.*)\]\]", stripped_line):
-        #     validate(brace_level == 0, "attribute field not in the global namespace")
 
-        #     current_attrs += [x.strip() for x in match.group(1).split(",")]
+    # this is a very hacky workaround for now, but if a global function is put before the start of another class,
+    # BromaClass.parse will get in the text with that function, so we try to detect this and split them up
+    def get_potential_residue(self, data: str, start_line: int) -> tuple[str, str]:
+        lines = data.splitlines()
 
-        # brace_level = 0
-        # current_class = BromaClass()
-        # current_inline = []
+        class_idx = 0
+        for n, line in enumerate(lines):
+            if line.startswith("class ") and line.endswith("{"):
+                class_idx = n
+                break
 
-        # for line_idx, line in enumerate(self.raw_lines):
-        #     # comment or empty line can be skipped
-        #     if line.startswith("//") or not line:
-        #         continue
+        # common case: it's just the attributes on the previous line
+        if class_idx <= 1:
+            if class_idx == 1:
+                assert is_line_cpp_attributes(lines[class_idx - 1].strip()), \
+                    f"Syntax error on line {start_line + class_idx - 1}: expected attributes or blank before class start"
 
-        #     if brace_level == 0:
-        #         # attributes
-        #         if match := re.match(r"\[\[(.*)\]\]", line):
-        #             current_class.attributes = [x.strip() for x in match.group(1).split(",")]
+            return None, data
 
-        #         # class name
-        #         if match := re.match(r"class[\s]+([a-zA-Z0-9_]+)[\s]*:?[ ]*([a-zA-Z0-9_:, ]*)[\s]*{", line):
-        #             current_class.name = match.group(1)
-        #             bases_str = match.group(2)
-        #             if bases_str:
-        #                 current_class.bases = [x.strip() for x in bases_str.split(",")]
+        # otherwise, things before the class and attributes are residue
+        has_attrs = is_line_cpp_attributes(lines[class_idx - 1].strip())
+        start_of_data = class_idx if not has_attrs else (class_idx - 1)
 
-        #             brace_level = set_brace_level(brace_level, line)
-        #             # print(f"Start class {current_class.name}")
+        residue_lines, data_lines = lines[:start_of_data], lines[start_of_data:]
+        return "\n".join(residue_lines), "\n".join(data_lines)
 
-        #             assert brace_level == 1
+    def parse_and_add_residue(self, data: str):
+        lines = data.splitlines()
 
-        #     # inside of a class, but not a function
-        #     elif brace_level == 1 and not self.is_member(line):
-        #         old_brace_level = brace_level
-        #         has_inline = False
+        attrs = []
+        for line in lines:
+            if is_line_cpp_attributes(line):
+                attrs.extend(line.partition("[[")[2].partition("]]")[0].split(","))
+                continue
 
-        #         if '{' in line or '}' in line:
-        #             brace_level = set_brace_level(brace_level, line)
-
-        #         if brace_level > old_brace_level or '{' in line:
-        #             has_inline = True
-        #         elif brace_level < old_brace_level:
-        #             # end of the class
-        #             assert len(current_class.name) > 0
-        #             # print(f"End class {current_class.name}")
-
-        #             current_class.struct.process()
-        #             out.append(current_class)
-        #             current_class = BromaClass()
-        #             continue
-
-        #         # no inline definition, just parse the function
-        #         if not has_inline:
-        #             func = BromaFunction.parse(line, current_class.name)
-        #             current_class.functions.append(func)
-        #             continue
-
-        #         # inline function
-        #         current_inline.clear()
-        #         current_inline.append(line)
-
-        #         # if this is a one line inlined function, add it immediately
-        #         if brace_level == old_brace_level:
-        #             func = BromaFunction.parse_inlined(current_inline, current_class.name)
-        #             current_class.functions.append(func)
-        #             continue
-
-        #     # inside of an inlined function
-        #     elif brace_level > 1:
-        #         brace_level = set_brace_level(brace_level, line)
-
-        #         current_inline.append(line)
-        #         if brace_level == 1:
-        #             # end of inlined function
-        #             func = BromaFunction.parse_inlined(current_inline, current_class.name)
-        #             current_class.functions.append(func)
-        #             continue
-
-        #     # a member
-        #     elif brace_level == 1:
-        #         if line.startswith("PAD"):
-        #             # a pad
-        #             broma_pad = BromaPad()
-        #             if '=' in line:
-        #                 platform_pads = [x.strip() for x in line.partition('=')[2].rpartition(";")[0].strip().split(',')]
-        #                 for pad in platform_pads:
-        #                     assert pad.count(" ") == 1
-        #                     platform, offset = pad.split(" ")
-        #                     offset = int(offset, 16)
-        #                     broma_pad.platforms[platform] = offset
-
-        #             current_class.struct.raw_members.append(broma_pad)
-        #         else:
-        #             # an actual member
-        #             type, _, name = line.rpartition(";")[0].rpartition(" ")
-        #             while name.startswith("*"):
-        #                 name = name[1:]
-        #                 type = type + "*"
-
-        #             current_class.struct.raw_members.append(BromaMember(type, name))
-
-        # return out
+            # most likely a function?
+            func = BromaFunction.parse(line, "_GLOBAL", attrs)
+            self.global_functions.append(func)
+            attrs = []
 
     # simply iterate over the lines until the first line that is not empty and not a comment is found
     def parse_preamble(self) -> tuple[str, int]:
@@ -1239,6 +1195,12 @@ class Broma:
         for cls in self.classes:
             out += cls.dump()
             out += "\n\n"
+
+        # For the purpose of sorting, we create a dummy class with the global functions
+        cls = BromaClass("_GLOBAL", [], self.global_functions, [])
+        cls.sort()
+        dumped_globals = "\n".join([x[4:] for x in cls.dump().splitlines()[1:-1]])
+        out += dumped_globals
 
         return out
 
