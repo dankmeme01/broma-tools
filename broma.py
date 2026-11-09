@@ -16,6 +16,8 @@ __all__ = [
     "is_member"
 ]
 
+ALL_PLATFORMS = ["imac", "m1", "win", "android32", "android64", "ios"]
+
 def is_line_cpp_attributes(text: str):
     return re.match(r"\[\[(.*)\]\]", text.strip()) is not None
 
@@ -163,6 +165,19 @@ def indent_lines(text: str, spaces: int) -> str:
     # remove last newline
     return out[:-1]
 
+def canonicalize_type(t: str) -> str:
+    # normalize const placement so `const T&` and `T const&` compare equal,
+    # while leaving `T* const` (const pointer) alone
+    t = ' '.join(t.split())
+    m = re.match(r'^(const|volatile)\s+(.*)$', t)
+    if not m:
+        return t
+    qual, rest = m.group(1), m.group(2)
+    m2 = re.match(r'^(.*?)\s*([*&]+)$', rest)   # split trailing * / & declarators
+    if m2:
+        return f'{m2.group(1)} {qual}{m2.group(2)}'
+    return f'{rest} {qual}'
+
 # strips line from single-line comments and whitespace
 def strip_line(line: str):
     # remove comments
@@ -172,12 +187,19 @@ def strip_line(line: str):
     return line.strip()
 
 def fix_cocos_typename(tn: str) -> str:
-    return \
-        tn.replace('cocos2d::_ccColor', 'cocos2d::ccColor') \
+    return tn \
+        .replace('cocos2d::_ccColor', 'cocos2d::ccColor') \
+        .replace("cocos2d::_ccBlendFunc", "cocos2d::ccBlendFunc") \
+
 
 # split a variable like 'void* m_member' into ('void*', 'm_member'), accounting for the positioning of asterisks in pointers
 # this function is a monstrosity
 def split_variable(var: str) -> tuple[str, str]:
+    TYPE_KEYWORDS = {
+        "void", "bool", "char", "short", "int", "long", "float", "double",
+        "signed", "unsigned", "wchar_t",
+    }
+
     # if no variable, then just return the input as the type
     var = var.strip()
     if var.endswith('*') or var.endswith('&'):
@@ -215,7 +237,13 @@ def split_variable(var: str) -> tuple[str, str]:
     if var_name is None:
         var_name = ''
 
-    type_string = ' '.join(reversed(type_parts))
+    # a type keyword can never be a variable name, so this is an unnamed type
+    # like `unsigned char` rather than `unsigned char <name>`
+    if var_name in TYPE_KEYWORDS:
+        var_name = ''
+        type_string = ' '.join(parts)
+    else:
+        type_string = ' '.join(reversed(type_parts))
 
     while ' *' in type_string:
         type_string = type_string.replace(' *', '*')
@@ -262,10 +290,10 @@ class BromaPad:
 
 @dataclass
 class BromaComment:
-    data: str
+    data: str | None
     force_multiline: bool = False
 
-    def dump(self) -> str:
+    def dump(self) -> str | None:
         if self.data is not None:
             if self.force_multiline or '\n' in self.data:
                 return f"/*{self.data}*/"
@@ -290,7 +318,7 @@ class BromaPlatformBlock:
 class BromaClass:
     name: str = "" # fully qualified class name
     attributes: list[str] = field(default_factory = list)
-    parts: list[BromaFunction | BromaMember | BromaPad | BromaComment] = field(default_factory = list)
+    parts: list[BromaFunction | BromaMember | BromaPad | BromaPlatformBlock | BromaComment] = field(default_factory = list)
     bases: list[str] = field(default_factory = list)
 
     @classmethod
@@ -531,7 +559,7 @@ class BromaClass:
                     elif not is_inlined: # non inlined function
                         attrs = list(next_member_attrs)
                         next_member_attrs.clear()
-                        func = BromaFunction.parse(stripped_line, class_name, attrs)
+                        func = BromaFunction.parse(line, class_name, attrs)
                         parts.append(func)
                     else: # inlined function
                         inside_inlined_func = True
@@ -647,6 +675,8 @@ class BromaClass:
                 members.append(part)
             elif isinstance(part, BromaPad):
                 members.append(part)
+            elif isinstance(part, BromaPlatformBlock):
+                members.append(part)
 
         # now, iterate in reverse and glue comments to the next member/function
         for n, part in reversed(list(enumerate(self.parts))):
@@ -727,7 +757,7 @@ class BromaClass:
                 # out += "\n"
 
             if isinstance(part, BromaFunction):
-                dumped = part.dump()
+                dumped = part.dump(self)
                 # print(f"dumped:\n{dumped}")
                 lines = dumped.splitlines()
                 lines = [(' ' * indent_level + x if x else '') for x in lines]
@@ -748,7 +778,27 @@ class BromaClass:
         out += "}"
         return out
 
-    def find_function(self, name: str, arglist: list[str] | None = None) -> BromaFunction:
+
+    def _all_plats_not_linked(self) -> list[str]:
+        plats = ALL_PLATFORMS
+        for attr in self.attributes:
+            if not attr.startswith("link("):
+                continue
+            plat_name = attr.partition("(")[2].rpartition(")")[0]
+            if plat_name in plats:
+                plats.remove(plat_name)
+            elif plat_name == "mac":
+                for p in ["imac", "m1"]:
+                    if p in plats:
+                        plats.remove(p)
+            elif plat_name == "android":
+                for p in ["android32", "android64"]:
+                    if p in plats:
+                        plats.remove(p)
+
+        return plats
+
+    def find_function(self, name: str, arglist: list[str] | None = None) -> BromaFunction | None:
         for func in self.parts:
             if not isinstance(func, BromaFunction):
                 continue
@@ -786,14 +836,27 @@ class BromaFunction:
     attrs: list[str] # such as static, virtual, callback
     args: list[tuple[str, str]] = [] # [(type, name)]
     ret_type: str
-    binds: dict[str, int | None] # None means inlined, int is an offset
+    binds: list[tuple[str, int | None]] # None means inlined, int is an offset
     qualifier: str # such as const, &, &&, const&
     cpp_attrs: list[str] # [[attr]] attributes
     inline_comment: str = ""
+    has_explicit_inline: bool = False
 
     KNOWN_ATTRS = ["static", "virtual", "callback", "inline"]
 
-    def __init__(self, name: str, inlined_body: str, attrs: list[str], args: list[tuple[str, str]], ret_type: str, binds: dict[str, int | None], qualifier: str, cpp_attrs: list[str], inline_comment: str = "") -> None:
+    def __init__(
+            self,
+            name: str,
+            inlined_body: str,
+            attrs: list[str],
+            args: list[tuple[str, str]],
+            ret_type: str,
+            binds: list[tuple[str, int | None]],
+            qualifier: str,
+            cpp_attrs: list[str],
+            inline_comment: str = "",
+            has_explicit_inline: bool = False
+    ) -> None:
         self.name = name
         self.inlined_body = inlined_body
         self.attrs = attrs
@@ -803,12 +866,20 @@ class BromaFunction:
         self.qualifier = qualifier
         self.cpp_attrs = cpp_attrs
         self.inline_comment = inline_comment
+        self.has_explicit_inline = has_explicit_inline
 
     def __eq__(self, value: object) -> bool:
         if not isinstance(value, BromaFunction):
             return False
 
         return self.eq_ignore_ret_type(value) and self.ret_type == value.ret_type
+
+    def get_bind(self, k: str, default = None) -> int | None:
+        for plat, offset in self.binds:
+            if plat == k:
+                return offset
+
+        return default
 
     def eq_ignore_ret_type(self, value: BromaFunction) -> bool:
         same_args = len(self.args) == len(value.args) and all([x[0] == y[0] for x, y in zip(self.args, value.args)])
@@ -918,33 +989,44 @@ class BromaFunction:
             qualifier = past_args.partition(";")[0].partition("{")[0]
             binds_list = []
 
+        has_explicit_inline = False
+        if 'inline' in binds_list:
+            binds_list.remove('inline')
+            for p in ALL_PLATFORMS:
+                if any(p in x for x in binds_list):
+                    continue
+                binds_list.append(f"{p} inline")
+            has_explicit_inline = True
+
         inline_comment = ""
         if '//' in past_args:
             inline_comment = past_args.partition("//")[2]
 
         qualifier = qualifier.strip()
 
-        binds = {}
+
+
+        binds = []
 
         for bind in binds_list:
             assert bind.count(' ') == 1, bind
             platform, offset = bind.split(' ')
             if offset == 'inline':
-                binds[platform] = None
+                binds.append((platform, None))
             elif offset.startswith("0x"):
                 try:
                     off = int(offset, 16)
-                    binds[platform] = off
+                    binds.append((platform, off))
                 except Exception as e:
                     print(f"WARN: failed to parse platform bind line: {e} (offset was {offset})")
                     print(f"Line: {line}")
 
         return cls(
-            fn_name, "", attrs, arglist, ret_type, binds, qualifier, cpp_attrs, inline_comment
+            fn_name, "", attrs, arglist, ret_type, binds, qualifier, cpp_attrs, inline_comment, has_explicit_inline
         )
 
     def get_arg_types(self) -> list[str]:
-        return [x[0] for x in self.args]
+        return [canonicalize_type(x[0]) for x in self.args]
 
     def format_inlined_body(self):
         # this is a very simple formatter that just removes trailing spaces and replaces tabs with spaces
@@ -953,13 +1035,13 @@ class BromaFunction:
         for line in lines:
             out += line.replace("\t", "    ").rstrip() + "\n"
 
-    def dump(self) -> str:
+    def dump(self, cls: BromaClass) -> str:
         out = ""
         if self.cpp_attrs:
             out += f"[[{', '.join(self.cpp_attrs)}]]\n"
 
         if self.attrs:
-            out = f"{' '.join(self.attrs)} "
+            out += f"{' '.join(self.attrs)} "
 
         if self.ret_type:
             out += f"{self.ret_type} "
@@ -1005,11 +1087,21 @@ class BromaFunction:
         # add binds
         out += " = "
         bind_strings = []
-        for bind in self.binds:
-            if self.binds[bind] is None:
-                bind_strings.append(f"{bind} inline")
-            else:
-                bind_strings.append(f"{bind} {hex(self.binds[bind])}")
+
+        all_inline = all(self.get_bind(x, -1) is None for x in cls._all_plats_not_linked())
+        if all_inline:
+            bind_strings.append("inline")
+        else:
+            for (plat, bind) in self.binds:
+                if bind is None:
+                    bind_strings.append(f"{plat} inline")
+                else:
+                    bind_strings.append(f"{plat} {hex(bind)}")
+
+        # fold inlines
+        if self.has_explicit_inline:
+            bind_strings = [x for x in bind_strings if not x.endswith('inline')]
+            bind_strings.append("inline")
 
         out += ", ".join(bind_strings)
 
@@ -1026,6 +1118,99 @@ class BromaFunction:
 
         return out
 
+# libc++ (used by the Android NDK) puts the standard library inside the inline
+# namespace `std::__ndk1`, e.g.
+#     std::__ndk1::vector<int, std::__ndk1::allocator<int> >
+# These mangled names are unhelpful in broma files, so they are rewritten into
+# their canonical short forms (std::vector<int>, std::map<K, V>, ...), dropping
+# the default template arguments (allocator / less / hash / equal_to / char_traits).
+_NDK1_NAMESPACES = ("std::__ndk1::", "std::__1::")
+
+# container name -> how many template arguments survive the rewrite
+_NDK1_KEPT_ARGS = {
+    "vector": 1,
+    "set": 1,
+    "unordered_set": 1,
+    "map": 2,
+    "unordered_map": 2,
+    "pair": 2,
+}
+
+
+def _split_template_args(inner: str) -> list[str]:
+    args = []
+    depth = 0
+    current = ""
+
+    for char in inner:
+        if char == '<':
+            depth += 1
+        elif char == '>':
+            depth -= 1
+
+        if char == ',' and depth == 0:
+            args.append(current.strip())
+            current = ""
+        else:
+            current += char
+
+    if current.strip():
+        args.append(current.strip())
+
+    return args
+
+
+def _replace_ndk1_templates(s: str) -> str:
+    out = ""
+
+    i = 0
+    while i < len(s):
+        namespace = next((ns for ns in _NDK1_NAMESPACES if s.startswith(ns, i)), None)
+        if namespace is None:
+            out += s[i]
+            i += 1
+            continue
+
+        name_start = i + len(namespace)
+        name_end = name_start
+        while name_end < len(s) and (s[name_end].isalnum() or s[name_end] == '_'):
+            name_end += 1
+        name = s[name_start:name_end]
+
+        if name_end >= len(s) or s[name_end] != '<':
+            out += f"std::{name}"
+            i = name_end
+            continue
+
+        # find the matching closing angle bracket
+        depth = 0
+        end = name_end
+        while end < len(s):
+            if s[end] == '<':
+                depth += 1
+            elif s[end] == '>':
+                depth -= 1
+                if depth == 0:
+                    break
+            end += 1
+
+        args = [_replace_ndk1_templates(arg) for arg in _split_template_args(s[name_end + 1:end])]
+
+        if name == "basic_string":
+            out += "std::string"
+        else:
+            kept = args[:_NDK1_KEPT_ARGS.get(name, len(args))]
+            out += f"std::{name}<{', '.join(kept)}>"
+
+        i = end + 1
+
+    return out
+
+
+def replace_templates(s: str) -> str:
+    return _replace_ndk1_templates(s)
+
+
 class Broma:
     raw_lines: list[str] # raw lines as they were in the input
     classes: list[BromaClass]
@@ -1033,6 +1218,8 @@ class Broma:
     preamble: str = ""
 
     def __init__(self, content: str) -> None:
+        content = replace_templates(content)
+
         self.raw_lines = content.splitlines()
         self.preamble, start_of_classes = self.parse_preamble()
         self.classes = self.parse_global_items(start_of_classes)
@@ -1188,6 +1375,9 @@ class Broma:
             cls.sort()
 
         self.classes.sort(key=lambda x: x.name.casefold())
+
+    def reformat(self):
+        self.sort_everything()
 
     def dump(self) -> str:
         out = self.preamble
